@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::thread::sleep_ms;
 use std::collections::HashMap;
+use petgraph::data::DataMapMut;
 use rs_graph_system::ThreadPool;
 use petgraph::Graph;
 use petgraph::adj::NodeIndex;
@@ -148,10 +149,11 @@ fn main() {
         let id = list_nodes[&i.try_into().unwrap()];
         let node_id = NodeIndex::new(id.try_into().unwrap());
         {
-            let info_node = deps.node_weight(node_id).unwrap().to_owned();
+            let mut info_node = deps.node_weight_mut(node_id).unwrap().to_owned();
             pool.execute(move || {
                 info_node.execute_self();
             });
+            //println!("{:}", deps.node_weight_mut(node_id).unwrap().res.Xz)
         }
     }
 }
