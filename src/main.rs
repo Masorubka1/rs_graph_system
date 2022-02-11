@@ -1,9 +1,10 @@
+use kafka::consumer::Message;
 use petgraph::adj::IndexType;
 use petgraph::adj::NodeIndex;
 use petgraph::Graph;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::num::ParseIntError;
 use std::thread::sleep_ms;
 mod producer;
 use crate::producer::Prod;
@@ -12,12 +13,12 @@ use crate::consumer::Cons;
 
 #[derive(Copy, Clone)]
 pub struct Xz {
-    Xz: usize,
+    xz: usize,
 }
 
 impl Xz {
     fn new(num: usize) -> Xz {
-        Xz { Xz: num }
+        Xz { xz: num }
     }
 }
 
@@ -36,12 +37,8 @@ impl<'a> InfoNode<'a, usize, Xz> {
         InfoNode {
             func: name,
             args: Args,
-            res: Some(Box::new(Xz::new(0))),
+            res: None,
         }
-    }
-    fn execute(helper: InfoNode<'a, usize, Option<Xz>>) -> Box<Xz> {
-        let tmp = ((helper.func)(&helper.args)).unwrap();
-        Box::new(tmp)
     }
     fn execute_self(&mut self) {
         self.res = Some(Box::new((self.func)(&self.args)));
@@ -62,13 +59,13 @@ fn test_build_graph(deps: &mut Graph<InfoNode<usize, Xz>, &str>) -> HashMap<usiz
     let mut first_h = HashMap::new();
     first_h.insert("name", Some(0));
     let mut second_h = HashMap::new();
-    second_h.insert("name", Some(1));
+    second_h.insert("name", Some(0));
     let mut third_h = HashMap::new();
-    third_h.insert("name", Some(2));
+    third_h.insert("name", Some(0));
     let mut fourth_h = HashMap::new();
-    fourth_h.insert("name", Some(3));
+    fourth_h.insert("name", Some(1));
     let mut thith_h = HashMap::new();
-    thith_h.insert("name", Some(4));
+    thith_h.insert("name", Some(2));
     let first = InfoNode::new(do_smth_2, first_h);
     let second = InfoNode::new(do_smth_2, second_h);
     let third = InfoNode::new(do_smth_2, third_h);
@@ -101,7 +98,6 @@ fn do_smth_2(tmp: &HashMap<&str, Option<usize>>) -> Xz {
 }
 
 fn timesort(deps: &Graph<InfoNode<usize, Xz>, &str>, ind: NodeIndex) -> Vec<isize> {
-    let mut hash_nodes = HashSet::<usize>::new();
     let mut queue_nodes = VecDeque::<usize>::new();
     let mut ans = Vec::<isize>::new();
     for _ in 0..deps.node_count() {
@@ -112,19 +108,15 @@ fn timesort(deps: &Graph<InfoNode<usize, Xz>, &str>, ind: NodeIndex) -> Vec<isiz
     while queue_nodes.len() != 0 {
         let node = queue_nodes.pop_front().unwrap();
         let tmp_node_index = NodeIndex::new(node);
-        hash_nodes.insert(node);
         for i in deps.neighbors_directed(tmp_node_index, petgraph::EdgeDirection::Outgoing) {
             if ans[i.index()] == -1 {
                 queue_nodes.push_back(i.index());
-                hash_nodes.insert(i.index());
                 ans[i.index()] = -2;
-            } else {
-                hash_nodes.remove(&i.index());
             }
         }
         let mut f = 0;
         for i in deps.neighbors_directed(tmp_node_index, petgraph::EdgeDirection::Incoming) {
-            if hash_nodes.contains(&i.index()) {
+            if ans[i.index()] < 0 {
                 f = 1;
                 break;
             }
@@ -134,10 +126,21 @@ fn timesort(deps: &Graph<InfoNode<usize, Xz>, &str>, ind: NodeIndex) -> Vec<isiz
         } else {
             ans[node] = cnt;
             cnt += 1;
-            hash_nodes.remove(&node);
         }
     }
     ans
+}
+
+fn get_message<'a>(m: &'a Message) -> (&'a str, Result<usize, ParseIntError>) {
+    let value = match std::str::from_utf8(m.value) {
+        Ok(v) => v,
+        Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+    };
+    let mut var = value.split(" ");
+    let status = var.next().unwrap();
+    let node_id_str = var.next().unwrap();
+    let tmp = node_id_str.parse::<usize>();
+    (status, tmp)
 }
 
 fn main() {
@@ -148,81 +151,66 @@ fn main() {
     }
     let sorted_nodes = timesort(&deps, NodeIndex::new(0));
     println!("{:?}", sorted_nodes);
-    let mut Produc = Prod::new();
-    let mut Consum = Cons::new("quickstart-events");
+    let mut produc = Prod::new();
+    let mut consum = Cons::new("quickstart-events");
     let mut q = VecDeque::<isize>::new();
     for i in sorted_nodes {
-        Produc.writ("quickstart-events", &format!("{} {}", &"Start", i));
+        produc.writ("quickstart-events", &format!("{} {}", &"Start", i));
         q.push_back(i);
     }
     while q.len() != 0 {
-        for ms in Consum.cons.poll().unwrap().iter() {
+        for ms in consum.cons.poll().unwrap().iter() {
             for m in ms.messages() {
-                let value = match std::str::from_utf8(m.value) {
-                    Ok(v) => v,
-                    Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-                };
-                let mut var = value.split(" ");
-                let status = var.next().unwrap();
-                let node_id_str = var.next().unwrap();
-                let tmp = node_id_str.parse::<usize>();
-                if tmp.is_err() {
+                let res = get_message(m);
+                let status = res.0;
+                let cur_num = res.1;
+                if cur_num.is_err() {
                     continue;
                 }
-                let node_id = tmp.unwrap().index();
+                let node_id = cur_num.unwrap().index();
                 match status {
                     "Start" => {
-                        let mut info_node = deps
-                            .node_weight_mut(NodeIndex::new(node_id))
-                            .unwrap()
-                            .to_owned();
+                        let info_node = deps.node_weight(NodeIndex::new(node_id)).unwrap();
                         let mut stop = false;
                         for (_i, xz) in &info_node.args {
-                            if xz.is_none() {
+                            let is_exist_res_xz =
+                                &deps.node_weight(NodeIndex::new(xz.unwrap())).unwrap().res;
+                            if is_exist_res_xz.is_none() && node_id != 0 {
                                 stop = true;
-                                break;
-                            }
-                            let cur_node_arg = xz.unwrap();
-                            stop = match deps.node_weight(NodeIndex::new(cur_node_arg)).unwrap().res {
-                                None => true,
-                                _ => false,
-                            };
-                            if stop == true && node_id != 0 {
                                 break;
                             }
                         }
                         match stop {
                             true => {
-                                Produc.writ("quickstart-events", &format!("Not {}", node_id));
+                                produc.writ("quickstart-events", &format!("Not {}", node_id));
                             }
                             false => {
-                                info_node.execute_self();
-                                Produc.writ("quickstart-events", &format!("Ok {}", node_id));
+                                deps.node_weight_mut(NodeIndex::new(node_id))
+                                    .unwrap()
+                                    .execute_self();
+                                let tmp = &deps
+                                    .node_weight(NodeIndex::new(node_id))
+                                    .unwrap()
+                                    .to_owned();
+                                println!(
+                                    "finished, {}, info_node.res = {}",
+                                    node_id,
+                                    tmp.res.as_ref().unwrap().xz
+                                );
                                 q.pop_front();
                             }
                         }
                     }
                     "Not" => {
-                        Produc.writ("quickstart-events", &format!("Start {}", node_id));
+                        produc.writ("quickstart-events", &format!("Start {}", node_id));
                     }
                     _ => {
-                        println!("finished, {:}", node_id);
+                        println!("WTF?, {}", node_id);
                     }
                 }
             }
-            Consum.cons.consume_messageset(ms);
+            consum.cons.consume_messageset(ms);
         }
-        Consum.cons.commit_consumed().unwrap();
+        consum.cons.commit_consumed().unwrap();
     }
-    /*for i in sorted_nodes {
-        let id = list_nodes[&i.try_into().unwrap()];
-        let node_id = NodeIndex::new(id.try_into().unwrap());
-        {
-            let mut info_node = deps.node_weight_mut(node_id).unwrap().to_owned();
-            pool.execute(move || {
-                info_node.execute_self();
-            });
-            //println!("{:}", deps.node_weight_mut(node_id).unwrap().res.Xz)
-        }
-    }*/
 }

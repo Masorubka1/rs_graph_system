@@ -17,14 +17,8 @@ impl Prod {
         Prod { buf, prod: var }
     }
     pub fn writ(&mut self, topic: &str, data: &str) {
-        let len_buf = 10;
         self.buf = data.to_string();
         self.prod.send(&Record::from_value(topic, data.as_bytes()));
         self.buf.clear();
-        /*for i in 0..((data.len() + len_buf) / len_buf) {
-            self.buf = data[i * self.buf.len()..self.buf.len()].to_string();
-            self.prod.send(&Record::from_value(topic, data.as_bytes()));
-            self.buf.clear();
-        }*/
     }
 }
