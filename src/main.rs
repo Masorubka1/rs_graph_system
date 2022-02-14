@@ -12,6 +12,7 @@ mod consumer;
 use crate::consumer::Cons;
 mod worker;
 use crate::worker::{do_smth_2, Worker};
+use futures::executor::block_on;
 
 pub struct Ans {
     FN_LIST: Vec<fn(&HashMap<&'static str, Option<usize>>) -> Xz>,
@@ -226,12 +227,12 @@ fn main() {
                                     for i in 0..workers.len() {
                                         if !workers[i].status {
                                             f = false;
-                                            workers[i].execute(
+                                            block_on(workers[i].execute(
                                                 node_info_local.id,
                                                 node_info_local.id,
                                                 node_info_local.id,
                                                 &mut a,
-                                            );
+                                            ));
                                             node_info_local.res =
                                                 a.RES_LIST[node_info_local.id].clone();
                                             workers[i].status = false;

@@ -18,7 +18,7 @@ impl Worker {
             status: false,
         }
     }
-    pub fn execute(
+    pub async fn execute(
         &mut self,
         func_id: usize,
         args_id: usize,
