@@ -10,6 +10,24 @@ mod producer;
 use crate::producer::Prod;
 mod consumer;
 use crate::consumer::Cons;
+mod worker;
+use crate::worker::{do_smth_2, Worker};
+
+pub struct Ans {
+    FN_LIST: Vec<fn(&HashMap<&'static str, Option<usize>>) -> Xz>,
+    ARGS_LIST: Vec<HashMap<&'static str, Option<usize>>>,
+    RES_LIST: Vec<Option<Box<Xz>>>,
+}
+
+impl Ans {
+    pub fn new() -> Ans {
+        Ans {
+            FN_LIST: Vec::new(),
+            ARGS_LIST: Vec::new(),
+            RES_LIST: Vec::new(),
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub struct Xz {
@@ -24,6 +42,7 @@ impl Xz {
 
 #[derive(Clone)]
 pub struct InfoNode<'a, T, V> {
+    id: usize,
     func: fn(&HashMap<&'a str, Option<T>>) -> V,
     args: HashMap<&'a str, Option<T>>,
     res: Option<Box<V>>,
@@ -33,8 +52,10 @@ impl<'a> InfoNode<'a, usize, Xz> {
     fn new(
         name: fn(&HashMap<&'a str, Option<usize>>) -> Xz,
         Args: HashMap<&'a str, Option<usize>>,
+        num: usize,
     ) -> InfoNode<'a, usize, Xz> {
         InfoNode {
+            id: num,
             func: name,
             args: Args,
             res: None,
@@ -48,6 +69,7 @@ impl<'a> InfoNode<'a, usize, Xz> {
 impl<'a> Default for InfoNode<'a, usize, Xz> {
     fn default() -> Self {
         InfoNode {
+            id: 0,
             func: do_smth_2,
             args: HashMap::<&'a str, Option<usize>>::new(),
             res: Some(Box::<Xz>::new(Xz::new(0))),
@@ -55,7 +77,10 @@ impl<'a> Default for InfoNode<'a, usize, Xz> {
     }
 }
 
-fn test_build_graph(deps: &mut Graph<InfoNode<usize, Xz>, &str>) -> HashMap<usize, NodeIndex> {
+fn test_build_graph(
+    deps: &mut Graph<InfoNode<usize, Xz>, &str>,
+    a: &mut Ans,
+) -> HashMap<usize, NodeIndex> {
     let mut first_h = HashMap::new();
     first_h.insert("name", Some(0));
     let mut second_h = HashMap::new();
@@ -66,11 +91,20 @@ fn test_build_graph(deps: &mut Graph<InfoNode<usize, Xz>, &str>) -> HashMap<usiz
     fourth_h.insert("name", Some(1));
     let mut thith_h = HashMap::new();
     thith_h.insert("name", Some(2));
-    let first = InfoNode::new(do_smth_2, first_h);
-    let second = InfoNode::new(do_smth_2, second_h);
-    let third = InfoNode::new(do_smth_2, third_h);
-    let fourth = InfoNode::new(do_smth_2, fourth_h);
-    let thith = InfoNode::new(do_smth_2, thith_h);
+    a.ARGS_LIST.push(first_h.clone());
+    a.ARGS_LIST.push(second_h.clone());
+    a.ARGS_LIST.push(third_h.clone());
+    a.ARGS_LIST.push(fourth_h.clone());
+    a.ARGS_LIST.push(thith_h.clone());
+    for _ in 0..5 {
+        a.FN_LIST.push(do_smth_2);
+        a.RES_LIST.push(None);
+    }
+    let first = InfoNode::new(do_smth_2, first_h, 0);
+    let second = InfoNode::new(do_smth_2, second_h, 1);
+    let third = InfoNode::new(do_smth_2, third_h, 2);
+    let fourth = InfoNode::new(do_smth_2, fourth_h, 3);
+    let thith = InfoNode::new(do_smth_2, thith_h, 4);
 
     //let arr = vec!["petgraph", "fixedbitset", "quickcheck", "rand", "libc"];
     let arr = vec![first, second, third, fourth, thith];
@@ -89,12 +123,6 @@ fn test_build_graph(deps: &mut Graph<InfoNode<usize, Xz>, &str>) -> HashMap<usiz
 
     deps.extend_with_edges(&[(pg, fb), (pg, qc), (qc, rand), (rand, libc), (qc, libc)]);
     list_nodes
-}
-
-fn do_smth_2(tmp: &HashMap<&str, Option<usize>>) -> Xz {
-    println!("{}", tmp["name"].unwrap());
-    sleep_ms(400);
-    Xz::new(5)
 }
 
 fn timesort(deps: &Graph<InfoNode<usize, Xz>, &str>, ind: NodeIndex) -> Vec<isize> {
@@ -145,9 +173,14 @@ fn get_message<'a>(m: &'a Message) -> (&'a str, Result<usize, ParseIntError>) {
 
 fn main() {
     let mut deps = Graph::<InfoNode<usize, Xz>, &str>::new();
+    let mut a = Ans::new();
+    let mut workers = Vec::new();
     let _list_nodes;
     {
-        _list_nodes = test_build_graph(&mut deps);
+        _list_nodes = test_build_graph(&mut deps, &mut a);
+        for i in 0..4 {
+            workers.push(Worker::new(i));
+        }
     }
     let sorted_nodes = timesort(&deps, NodeIndex::new(0));
     println!("{:?}", sorted_nodes);
@@ -185,9 +218,27 @@ fn main() {
                                 produc.writ("quickstart-events", &format!("Not {}", node_id));
                             }
                             false => {
-                                deps.node_weight_mut(NodeIndex::new(node_id))
-                                    .unwrap()
-                                    .execute_self();
+                                let node_info_local =
+                                    deps.node_weight_mut(NodeIndex::new(node_id)).unwrap();
+                                //node_info_local.execute_self();
+                                let mut f = true;
+                                while f {
+                                    for i in 0..workers.len() {
+                                        if !workers[i].status {
+                                            f = false;
+                                            workers[i].execute(
+                                                node_info_local.id,
+                                                node_info_local.id,
+                                                node_info_local.id,
+                                                &mut a,
+                                            );
+                                            node_info_local.res =
+                                                a.RES_LIST[node_info_local.id].clone();
+                                            workers[i].status = false;
+                                            break;
+                                        }
+                                    }
+                                }
                                 let tmp = &deps
                                     .node_weight(NodeIndex::new(node_id))
                                     .unwrap()
