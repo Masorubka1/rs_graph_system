@@ -2,33 +2,21 @@ use kafka::consumer::Message;
 use petgraph::adj::IndexType;
 use petgraph::adj::NodeIndex;
 use petgraph::Graph;
+use serde::de::value;
+use serde::ser::SerializeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::num::ParseIntError;
 use std::thread::sleep_ms;
+use std::vec;
 mod producer;
 use crate::producer::Prod;
 mod consumer;
 use crate::consumer::Cons;
 mod worker;
 use crate::worker::{do_smth_2, Worker};
-use futures::executor::block_on;
-
-pub struct Ans {
-    FN_LIST: Vec<fn(&HashMap<&'static str, Option<usize>>) -> Xz>,
-    ARGS_LIST: Vec<HashMap<&'static str, Option<usize>>>,
-    RES_LIST: Vec<Option<Box<Xz>>>,
-}
-
-impl Ans {
-    pub fn new() -> Ans {
-        Ans {
-            FN_LIST: Vec::new(),
-            ARGS_LIST: Vec::new(),
-            RES_LIST: Vec::new(),
-        }
-    }
-}
+use serde::{Serialize, Serializer};
+use serde_json;
 
 #[derive(Copy, Clone)]
 pub struct Xz {
@@ -42,11 +30,42 @@ impl Xz {
 }
 
 #[derive(Clone)]
+struct SerializeHashMap<T> {
+    hashmap: HashMap<String, T>,
+}
+
+impl SerializeHashMap<Xz> {
+    fn new(h: HashMap<&str, Option<usize>>, deps: &Graph<InfoNode<usize, Xz>, &str>) -> SerializeHashMap<Xz> {
+        let mut ans = HashMap::<String, Xz>::new();
+        for (k, v) in h {
+            let deps_data = &deps.node_weight(NodeIndex::new(v.unwrap())).unwrap();
+            let res_data = deps_data.res.unwrap().clone();
+            ans.insert(k.to_string(), res_data);
+        }
+        SerializeHashMap { hashmap: ans }
+    }
+}
+
+impl Serialize for SerializeHashMap<Xz> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.hashmap.len()))?;
+        for (k, v) in &self.hashmap {
+            let value = v.xz;
+            map.serialize_entry(k, &value)?;
+        }
+        map.end()
+    }
+}
+
+#[derive(Clone)]
 pub struct InfoNode<'a, T, V> {
     id: usize,
     func: fn(&HashMap<&'a str, Option<T>>) -> V,
     args: HashMap<&'a str, Option<T>>,
-    res: Option<Box<V>>,
+    res: Option<V>,
 }
 
 impl<'a> InfoNode<'a, usize, Xz> {
@@ -63,7 +82,7 @@ impl<'a> InfoNode<'a, usize, Xz> {
         }
     }
     fn execute_self(&mut self) {
-        self.res = Some(Box::new((self.func)(&self.args)));
+        self.res = Some((self.func)(&self.args));
     }
 }
 
@@ -73,15 +92,12 @@ impl<'a> Default for InfoNode<'a, usize, Xz> {
             id: 0,
             func: do_smth_2,
             args: HashMap::<&'a str, Option<usize>>::new(),
-            res: Some(Box::<Xz>::new(Xz::new(0))),
+            res: Some(Xz::new(0)),
         }
     }
 }
 
-fn test_build_graph(
-    deps: &mut Graph<InfoNode<usize, Xz>, &str>,
-    a: &mut Ans,
-) -> HashMap<usize, NodeIndex> {
+fn test_build_graph(deps: &mut Graph<InfoNode<usize, Xz>, &str>) -> HashMap<usize, NodeIndex> {
     let mut first_h = HashMap::new();
     first_h.insert("name", Some(0));
     let mut second_h = HashMap::new();
@@ -92,15 +108,6 @@ fn test_build_graph(
     fourth_h.insert("name", Some(1));
     let mut thith_h = HashMap::new();
     thith_h.insert("name", Some(2));
-    a.ARGS_LIST.push(first_h.clone());
-    a.ARGS_LIST.push(second_h.clone());
-    a.ARGS_LIST.push(third_h.clone());
-    a.ARGS_LIST.push(fourth_h.clone());
-    a.ARGS_LIST.push(thith_h.clone());
-    for _ in 0..5 {
-        a.FN_LIST.push(do_smth_2);
-        a.RES_LIST.push(None);
-    }
     let first = InfoNode::new(do_smth_2, first_h, 0);
     let second = InfoNode::new(do_smth_2, second_h, 1);
     let third = InfoNode::new(do_smth_2, third_h, 2);
@@ -174,13 +181,12 @@ fn get_message<'a>(m: &'a Message) -> (&'a str, Result<usize, ParseIntError>) {
 
 fn main() {
     let mut deps = Graph::<InfoNode<usize, Xz>, &str>::new();
-    let mut a = Ans::new();
     let mut workers = Vec::new();
     let _list_nodes;
     {
-        _list_nodes = test_build_graph(&mut deps, &mut a);
-        for i in 0..4 {
-            workers.push(Worker::new(i));
+        _list_nodes = test_build_graph(&mut deps);
+        for _ in 0..4 {
+            workers.push(false);
         }
     }
     let sorted_nodes = timesort(&deps, NodeIndex::new(0));
@@ -201,7 +207,7 @@ fn main() {
                 if cur_num.is_err() {
                     continue;
                 }
-                let node_id = cur_num.unwrap().index();
+                let node_id = cur_num.unwrap();
                 match status {
                     "Start" => {
                         let info_node = deps.node_weight(NodeIndex::new(node_id)).unwrap();
@@ -219,28 +225,27 @@ fn main() {
                                 produc.writ("quickstart-events", &format!("Not {}", node_id));
                             }
                             false => {
-                                let node_info_local =
+                                /*let node_info_local =
                                     deps.node_weight_mut(NodeIndex::new(node_id)).unwrap();
-                                //node_info_local.execute_self();
+                                //node_info_local.execute_self();*/
                                 let mut f = true;
                                 while f {
                                     for i in 0..workers.len() {
-                                        if !workers[i].status {
+                                        if !workers[i] {
                                             f = false;
-                                            block_on(workers[i].execute(
-                                                node_info_local.id,
-                                                node_info_local.id,
-                                                node_info_local.id,
-                                                &mut a,
-                                            ));
-                                            node_info_local.res =
-                                                a.RES_LIST[node_info_local.id].clone();
-                                            workers[i].status = false;
+                                            workers[i] = true;
+                                            let tmp_hashmap =
+                                                SerializeHashMap::new(info_node.args.clone(), &deps);
+                                            let ser = serde_json::to_string(&tmp_hashmap).unwrap();
+                                            produc.writ(
+                                                &i.to_string(),
+                                                &format!("{} {} {}", "Start", "0", &ser),
+                                            );
                                             break;
                                         }
                                     }
                                 }
-                                let tmp = &deps
+                                /*let tmp = &deps
                                     .node_weight(NodeIndex::new(node_id))
                                     .unwrap()
                                     .to_owned();
@@ -248,7 +253,7 @@ fn main() {
                                     "finished, {}, info_node.res = {}",
                                     node_id,
                                     tmp.res.as_ref().unwrap().xz
-                                );
+                                );*/
                                 q.pop_front();
                             }
                         }
@@ -256,13 +261,34 @@ fn main() {
                     "Not" => {
                         produc.writ("quickstart-events", &format!("Start {}", node_id));
                     }
+                    "Finish" => {
+                        let value = match std::str::from_utf8(m.value) {
+                            Ok(v) => v,
+                            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+                        };
+                        let mut var = value.split(" ");
+                        var.next();
+                        var.next();
+                        let id_worker = var.next().unwrap().parse::<usize>().unwrap();
+                        let ans = var.next().unwrap();
+                        let cur_deps_node = deps.node_weight_mut(NodeIndex::new(node_id)).unwrap();
+                        cur_deps_node.res = Some(Xz::new(ans.parse::<usize>().unwrap()));
+                        workers[id_worker] = false;
+                    }
                     _ => {
                         println!("WTF?, {}", node_id);
                     }
                 }
             }
-            consum.cons.consume_messageset(ms);
+            let _t = consum.cons.consume_messageset(ms);
+            if _t.is_err() {
+                panic!("Oh no")
+            }
         }
-        consum.cons.commit_consumed().unwrap();
+        let _t = consum.cons.commit_consumed();
+        if _t.is_err() {
+            panic!("Oh no")
+        }
+        _t.unwrap();
     }
 }
