@@ -194,6 +194,8 @@ fn main() {
     let mut produc = Prod::new();
     let mut consum = Cons::new("quickstart-events");
     let mut q = VecDeque::<isize>::new();
+    let mut tmp = deps.node_weight_mut(NodeIndex::new(0)).unwrap();
+    tmp.res = Some(Xz::new(0));
     for i in sorted_nodes {
         produc.writ("quickstart-events", &format!("{} {}", &"Start", i));
         q.push_back(i);
@@ -291,4 +293,5 @@ fn main() {
         }
         _t.unwrap();
     }
+    produc.writ("stop-workers", "Stop");
 }

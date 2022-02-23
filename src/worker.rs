@@ -92,3 +92,31 @@ impl<'b> Worker {
         _t.unwrap();
     }
 }
+
+fn main() {
+    let mut workers = Vec::new();
+    for i in 0..4 {
+        workers.push(Worker::new(i));
+    }
+    let mut consum = Cons::new("stop_workers").cons;
+    let mut f = true;
+    while f {
+        for ms in consum.poll().unwrap().iter() {
+            for m in ms.messages() {
+                let value = match std::str::from_utf8(m.value) {
+                    Ok(v) => v,
+                    Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+                };
+                let mut var = value.split(" ");
+                let status = var.next().unwrap();
+                if status == "Stop" {
+                    f = false;
+                    break;
+                }
+            }
+        }
+        for i in 0..workers.len() {
+            workers[i].run();
+        }
+    }
+}
